@@ -17,7 +17,7 @@ go build -o ./dist/linux/gitlab-webhook-tool ./cmd/main.go
 
 # 启动参数
 ```bash
-    ./gitlab-webhook-tool -port 6711 -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/11111111111111111
+    ./gitlab-webhook-tool -port 6710 -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/11111111111111111
 ```
 - port  监听的端口
 -feishuWebhook 飞书机器人
