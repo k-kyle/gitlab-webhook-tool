@@ -11,6 +11,11 @@ window下交叉编译
 $ENV:CGO_ENABLED=0
 $ENV:GOOS="linux"
 $ENV:GOARCH="amd64"
+
+export CGO_ENABLED=0
+export GOOS=linux
+export GOARCH=amd64
+
 go build -o ./dist/linux/gitlab-webhook-tool ./cmd/main.go
 ```
 

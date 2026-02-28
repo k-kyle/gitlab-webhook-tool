@@ -52,7 +52,7 @@ func PushFeishuCardTmpl() string {
 			  "tag": "note",
 			  "elements": [{
 				"content": "{{.commit}}",
-				"tag": "plain_text"
+				"tag": "lark_md"
 			  }]
 			}
 		  ],
