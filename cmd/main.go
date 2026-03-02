@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"github.com/luoyanke/gitlab-webhook-tool/internal"
 	"io/ioutil"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 )
 
 func main() {
@@ -31,27 +33,46 @@ func main() {
 
 	http.HandleFunc("/web-hook", func(writer http.ResponseWriter, request *http.Request) {
 		log.Printf("incoming webhook request: method=%s path=%s remote=%s", request.Method, request.URL.Path, request.RemoteAddr)
-		var bodyBytes, _ = ioutil.ReadAll(request.Body)
+		if request.Method != http.MethodPost {
+			writer.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		bodyBytes, err := ioutil.ReadAll(request.Body)
 		defer request.Body.Close()
+		if err != nil {
+			log.Printf("read webhook payload failed: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		log.Printf("webhook payload size=%d bytes", len(bodyBytes))
 		//body := string(bodyBytes)
 		//log.Print(body)
 
 		var baseBody internal.BaseBody
-		err := json.Unmarshal(bodyBytes, &baseBody)
+		err = json.Unmarshal(bodyBytes, &baseBody)
 		if err != nil {
 			log.Printf("invalid webhook payload: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		if baseBody.ObjectKind == "merge_request" {
 			log.Print("dispatch webhook: object_kind=merge_request")
-			mergeRequestNotify(bodyBytes, feishuWebhook)
+			if err = mergeRequestNotify(bodyBytes, feishuWebhook); err != nil {
+				log.Printf("merge_request notify failed: %v", err)
+				writer.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 		} else if baseBody.ObjectKind == "push" {
 			log.Print("dispatch webhook: object_kind=push")
-			pushNotify(bodyBytes, feishuWebhook)
+			if err = pushNotify(bodyBytes, feishuWebhook); err != nil {
+				log.Printf("push notify failed: %v", err)
+				writer.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 		} else {
 			log.Printf("ignore webhook: unsupported object_kind=%s", baseBody.ObjectKind)
 		}
+		writer.WriteHeader(http.StatusOK)
 	})
 
 	// 启动 HTTP 服务器
@@ -62,13 +83,70 @@ func main() {
 	}
 }
 
-func mergeRequestNotify(bodyBytes []byte, feishuWebhook string) {
-	var body internal.MergeRequestBody
+func renderCard(templateName string, templateContent string, data map[string]interface{}) (string, error) {
 	var writer bytes.Buffer
+	tmpl, err := template.New(templateName).Parse(templateContent)
+	if err != nil {
+		return "", fmt.Errorf("parse %s template failed: %w", templateName, err)
+	}
+	if err = tmpl.Execute(&writer, data); err != nil {
+		return "", fmt.Errorf("render %s card failed: %w", templateName, err)
+	}
+	return writer.String(), nil
+}
+
+func sendFeishuCard(feishuWebhook string, card string) (*FeishuWebHookResp, error) {
+	if feishuWebhook == "" {
+		return nil, fmt.Errorf("feishuWebhook is empty")
+	}
+
+	cardBody := internal.FeishuCard{
+		MsgType: "interactive",
+		Card:    card,
+	}
+	marshal, err := json.Marshal(cardBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal card failed: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", feishuWebhook, bytes.NewBuffer(marshal))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytesResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read feishu response failed: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("feishu response status=%s body=%s", resp.Status, string(bodyBytesResp))
+	}
+
+	var result FeishuWebHookResp
+	if err = json.Unmarshal(bodyBytesResp, &result); err != nil {
+		return nil, fmt.Errorf("parse feishu response failed: %w, body=%s", err, string(bodyBytesResp))
+	}
+	if result.Code != 0 {
+		return &result, fmt.Errorf("feishu response code=%d msg=%s", result.Code, result.Msg)
+	}
+
+	return &result, nil
+}
+
+func mergeRequestNotify(bodyBytes []byte, feishuWebhook string) error {
+	var body internal.MergeRequestBody
 	err := json.Unmarshal(bodyBytes, &body)
 	if err != nil {
 		log.Printf("parse merge_request payload failed: %v", err)
-		return
+		return err
 	}
 	log.Printf("merge_request event: project=%s state=%s source=%s target=%s user=%s",
 		body.Project.Name, body.ObjectAttributes.State, body.ObjectAttributes.SourceBranch, body.ObjectAttributes.TargetBranch, body.User.Username)
@@ -89,8 +167,7 @@ func mergeRequestNotify(bodyBytes []byte, feishuWebhook string) {
 		headerColor = "blue"
 	}
 
-	tmpl, _ := template.New("index").Parse(internal.MergeRequestFeishuCardTmpl())
-	tmpl.Execute(&writer, map[string]interface{}{
+	card, err := renderCard("merge_request", internal.MergeRequestFeishuCardTmpl(), map[string]interface{}{
 		"projectName":  body.Project.Name,
 		"userName":     body.User.Username + "(" + body.User.Name + ")",
 		"sourceBranch": body.ObjectAttributes.SourceBranch,
@@ -99,37 +176,23 @@ func mergeRequestNotify(bodyBytes []byte, feishuWebhook string) {
 		"title":        title,
 		"headerColor":  headerColor,
 	})
-	var cardBody internal.FeishuCard
-	cardBody.MsgType = "interactive"
-	cardBody.Card = writer.String()
-	//log.Print(cardBody.Card)
-	marshal, err := json.Marshal(cardBody)
-	req, err := http.NewRequest("POST", feishuWebhook, bytes.NewBuffer(marshal))
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatalln(err)
-	} else {
-		log.Printf("merge_request notify sent, feishuStatus=%s", resp.Status)
-		//var bodyBytes, _ = ioutil.ReadAll(req.Body)
-		//s := string(bodyBytes)
-		//log.Print(s)
+	if _, err = sendFeishuCard(feishuWebhook, card); err != nil {
+		return err
 	}
-	defer resp.Body.Close()
+	log.Printf("merge_request notify success: project=%s state=%s", body.Project.Name, body.ObjectAttributes.State)
+	return nil
 }
 
-func pushNotify(bodyBytes []byte, feishuWebhook string) {
+func pushNotify(bodyBytes []byte, feishuWebhook string) error {
 	var body internal.PushRequestBody
-	var writer bytes.Buffer
 
 	err := json.Unmarshal(bodyBytes, &body)
 	if err != nil {
 		log.Printf("parse push payload failed: %v", err)
-		return
+		return err
 	}
 	log.Printf("push event: project=%s ref=%s user=%s commits=%d", body.Project.Name, body.Ref, body.UserName, len(body.Commits))
 	var commits string
@@ -175,8 +238,7 @@ func pushNotify(bodyBytes []byte, feishuWebhook string) {
 		headerColor = "turquoise"
 	}
 
-	tmpl, _ := template.New("index").Parse(internal.PushFeishuCardTmpl())
-	tmpl.Execute(&writer, map[string]interface{}{
+	card, err := renderCard("push", internal.PushFeishuCardTmpl(), map[string]interface{}{
 		"projectName": body.Project.Name,
 		"userName":    body.UserName,
 		"ref":         body.Ref,
@@ -185,44 +247,21 @@ func pushNotify(bodyBytes []byte, feishuWebhook string) {
 		"title":       title,
 		"headerColor": headerColor,
 	})
-
-	var cardBody internal.FeishuCard
-	cardBody.MsgType = "interactive"
-	cardBody.Card = writer.String()
-	//log.Print(cardBody.Card)
-	marshal, err := json.Marshal(cardBody)
-	req, err := http.NewRequest("POST", feishuWebhook, bytes.NewBuffer(marshal))
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	result, err := sendFeishuCard(feishuWebhook, card)
 	if err != nil {
-		log.Fatalln(err)
-	} else {
-		defer resp.Body.Close()
-		var result FeishuWebHookResp
-		var bodyBytes, _ = ioutil.ReadAll(resp.Body)
-		err := json.Unmarshal(bodyBytes, &result)
-		if err != nil {
-			log.Print(err)
-			return
-		}
-		if result.Code != 0 {
+		if result != nil {
 			bytearray, _ := json.Marshal(result)
 			log.Print(string(bytearray))
-			log.Print(cardBody)
-		} else {
-			log.Printf("push notify success: project=%s ref=%s commits=%d", body.Project.Name, body.Ref, len(body.Commits))
 		}
-		//var bodyBytes, _ = ioutil.ReadAll(resp.Body)
-		//log.Print(string(bodyBytes))
-		//var bodyBytes, _ = ioutil.ReadAll(req.Body)
-		//s := string(bodyBytes)
-		//log.Print(s)
+		log.Print(card)
+		return err
 	}
+	log.Printf("push notify success: project=%s ref=%s commits=%d", body.Project.Name, body.Ref, len(body.Commits))
 
+	return nil
 }
 
 type FeishuWebHookResp struct {
