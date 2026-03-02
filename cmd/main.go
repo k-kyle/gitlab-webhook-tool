@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"github.com/luoyanke/gitlab-webhook-tool/internal"
+	"gopkg.in/yaml.v3"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/template"
@@ -19,16 +21,30 @@ import (
 func main() {
 
 	var feishuWebhook string
+	var configPath string
 	//开启的端口
 	var port int
 
 	// 解析命令行参数
 	flag.StringVar(&feishuWebhook, "feishuWebhook", "", "")
+	flag.StringVar(&configPath, "config", "", "")
 	flag.IntVar(&port, "port", 6710, "6710")
 	flag.Parse()
-	log.Printf("service starting, port=%d, feishuWebhookConfigured=%t", port, feishuWebhook != "")
-	if feishuWebhook == "" {
-		log.Print("warning: feishuWebhook is empty, notifications will fail")
+
+	webhookRoutes := map[string]string{}
+	if configPath != "" {
+		routes, err := loadWebhookRouteConfig(configPath)
+		if err != nil {
+			log.Printf("load config failed: %v", err)
+			os.Exit(1)
+		}
+		webhookRoutes = routes
+	}
+
+	log.Printf("service starting, port=%d, feishuWebhookConfigured=%t, config=%s, routeCount=%d",
+		port, feishuWebhook != "", configPath, len(webhookRoutes))
+	if feishuWebhook == "" && len(webhookRoutes) == 0 {
+		log.Print("warning: no webhook configured, notifications will fail")
 	}
 
 	http.HandleFunc("/web-hook", func(writer http.ResponseWriter, request *http.Request) {
@@ -57,14 +73,14 @@ func main() {
 		}
 		if baseBody.ObjectKind == "merge_request" {
 			log.Print("dispatch webhook: object_kind=merge_request")
-			if err = mergeRequestNotify(bodyBytes, feishuWebhook); err != nil {
+			if err = mergeRequestNotify(bodyBytes, feishuWebhook, webhookRoutes); err != nil {
 				log.Printf("merge_request notify failed: %v", err)
 				writer.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 		} else if baseBody.ObjectKind == "push" {
 			log.Print("dispatch webhook: object_kind=push")
-			if err = pushNotify(bodyBytes, feishuWebhook); err != nil {
+			if err = pushNotify(bodyBytes, feishuWebhook, webhookRoutes); err != nil {
 				log.Printf("push notify failed: %v", err)
 				writer.WriteHeader(http.StatusInternalServerError)
 				return
@@ -81,6 +97,71 @@ func main() {
 		log.Printf("http server stopped: %v", err)
 		os.Exit(1)
 	}
+}
+
+type WebhookRouteConfig struct {
+	Routes map[string]string `json:"routes" yaml:"routes"`
+}
+
+func loadWebhookRouteConfig(configPath string) (map[string]string, error) {
+	content, err := ioutil.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config file failed: %w", err)
+	}
+
+	var cfg WebhookRouteConfig
+	ext := strings.ToLower(filepath.Ext(configPath))
+	switch ext {
+	case ".yaml", ".yml":
+		if err = yaml.Unmarshal(content, &cfg); err != nil {
+			return nil, fmt.Errorf("parse yaml config failed: %w", err)
+		}
+	case ".json":
+		if err = json.Unmarshal(content, &cfg); err != nil {
+			return nil, fmt.Errorf("parse json config failed: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported config extension: %s", ext)
+	}
+
+	if len(cfg.Routes) == 0 {
+		return nil, fmt.Errorf("config routes is empty")
+	}
+
+	routes := map[string]string{}
+	for key, value := range cfg.Routes {
+		k := strings.TrimSpace(key)
+		v := strings.TrimSpace(value)
+		if k == "" || v == "" {
+			continue
+		}
+		routes[k] = v
+	}
+	if len(routes) == 0 {
+		return nil, fmt.Errorf("config routes has no valid entries")
+	}
+	return routes, nil
+}
+
+func resolveWebhook(projectName string, projectPathWithNamespace string, defaultWebhook string, routes map[string]string) (string, string, error) {
+	lookupKeys := []string{
+		strings.TrimSpace(projectPathWithNamespace),
+		strings.TrimSpace(projectName),
+		"*",
+	}
+
+	for _, key := range lookupKeys {
+		if key == "" {
+			continue
+		}
+		if webhook, ok := routes[key]; ok && strings.TrimSpace(webhook) != "" {
+			return webhook, key, nil
+		}
+	}
+	if strings.TrimSpace(defaultWebhook) != "" {
+		return defaultWebhook, "flag:-feishuWebhook", nil
+	}
+	return "", "", fmt.Errorf("no webhook route found for project=%s namespace=%s", projectName, projectPathWithNamespace)
 }
 
 func renderCard(templateName string, templateContent string, data map[string]interface{}) (string, error) {
@@ -141,11 +222,15 @@ func sendFeishuCard(feishuWebhook string, card string) (*FeishuWebHookResp, erro
 	return &result, nil
 }
 
-func mergeRequestNotify(bodyBytes []byte, feishuWebhook string) error {
+func mergeRequestNotify(bodyBytes []byte, defaultWebhook string, routes map[string]string) error {
 	var body internal.MergeRequestBody
 	err := json.Unmarshal(bodyBytes, &body)
 	if err != nil {
 		log.Printf("parse merge_request payload failed: %v", err)
+		return err
+	}
+	feishuWebhook, routeKey, err := resolveWebhook(body.Project.Name, body.Project.PathWithNamespace, defaultWebhook, routes)
+	if err != nil {
 		return err
 	}
 	log.Printf("merge_request event: project=%s state=%s source=%s target=%s user=%s",
@@ -182,16 +267,20 @@ func mergeRequestNotify(bodyBytes []byte, feishuWebhook string) error {
 	if _, err = sendFeishuCard(feishuWebhook, card); err != nil {
 		return err
 	}
-	log.Printf("merge_request notify success: project=%s state=%s", body.Project.Name, body.ObjectAttributes.State)
+	log.Printf("merge_request notify success: project=%s state=%s route=%s", body.Project.Name, body.ObjectAttributes.State, routeKey)
 	return nil
 }
 
-func pushNotify(bodyBytes []byte, feishuWebhook string) error {
+func pushNotify(bodyBytes []byte, defaultWebhook string, routes map[string]string) error {
 	var body internal.PushRequestBody
 
 	err := json.Unmarshal(bodyBytes, &body)
 	if err != nil {
 		log.Printf("parse push payload failed: %v", err)
+		return err
+	}
+	feishuWebhook, routeKey, err := resolveWebhook(body.Project.Name, body.Project.PathWithNamespace, defaultWebhook, routes)
+	if err != nil {
 		return err
 	}
 	log.Printf("push event: project=%s ref=%s user=%s commits=%d", body.Project.Name, body.Ref, body.UserName, len(body.Commits))
@@ -259,7 +348,7 @@ func pushNotify(bodyBytes []byte, feishuWebhook string) error {
 		log.Print(card)
 		return err
 	}
-	log.Printf("push notify success: project=%s ref=%s commits=%d", body.Project.Name, body.Ref, len(body.Commits))
+	log.Printf("push notify success: project=%s ref=%s commits=%d route=%s", body.Project.Name, body.Ref, len(body.Commits), routeKey)
 
 	return nil
 }

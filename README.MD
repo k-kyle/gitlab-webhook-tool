@@ -24,16 +24,63 @@
 ## 启动参数
 
 ```bash
-./gitlab-webhook-tool -port 6710 -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+./gitlab-webhook-tool -port 6710 -config ./config.yaml -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/fallback
 ```
 
 - `-port`：HTTP 监听端口，默认 `6710`
-- `-feishuWebhook`：飞书机器人 Webhook 地址（必填）
+- `-config`：路由配置文件路径，支持 `.json/.yaml/.yml`
+- `-feishuWebhook`：兜底飞书机器人 Webhook（可选）
 
 ## 本地运行（开发调试）
 
 ```bash
-go run ./cmd/main.go -port 6710 -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+go run ./cmd/main.go -port 6710 -config ./config.yaml
+```
+
+## 按项目路由到不同机器人
+
+支持通过配置文件将不同项目路由到不同飞书机器人。
+
+路由优先级如下：
+
+1. `project.path_with_namespace`（例如 `group/projectA`）
+2. `project.name`（例如 `projectA`）
+3. `*`（默认路由）
+4. `-feishuWebhook`（命令行兜底）
+
+### YAML 示例
+
+```yaml
+routes:
+  "*": "https://open.feishu.cn/open-apis/bot/v2/hook/defaultA"
+  "projectA": "https://open.feishu.cn/open-apis/bot/v2/hook/botB"
+  "group/projectB": "https://open.feishu.cn/open-apis/bot/v2/hook/botC"
+```
+
+### JSON 示例
+
+```json
+{
+  "routes": {
+    "*": "https://open.feishu.cn/open-apis/bot/v2/hook/defaultA",
+    "projectA": "https://open.feishu.cn/open-apis/bot/v2/hook/botB",
+    "group/projectB": "https://open.feishu.cn/open-apis/bot/v2/hook/botC"
+  }
+}
+```
+
+### 启动示例
+
+仅使用配置文件：
+
+```bash
+./gitlab-webhook-tool -port 6710 -config ./config.yaml
+```
+
+配置文件 + 命令行兜底：
+
+```bash
+./gitlab-webhook-tool -port 6710 -config ./config.yaml -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/fallback
 ```
 
 ## 编译
