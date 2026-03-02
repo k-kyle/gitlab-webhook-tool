@@ -1,28 +1,81 @@
+# GitLab Webhook Tool
 
-# 访问路径
-- http://ip:6710/web-hook
+一个轻量的 Go 服务：接收 GitLab Webhook 事件，并将消息转发为飞书机器人卡片通知。
 
+## 功能说明
 
-# 编译
-制品包在 ./dist/linux/
+- 监听 HTTP 地址：`/web-hook`
+- 支持事件类型：
+  - `push`
+  - `merge_request`
+- 飞书通知内容包含：
+  - 项目、用户、分支信息
+  - push 的 commit 摘要
+  - push 的 `modified` 文件列表（最多展示 10 个）
+- 运行日志包含：
+  - 服务启动信息
+  - webhook 请求接收和分发信息
+  - 飞书发送结果
 
-window下交叉编译
+## 默认访问地址
+
+- `http://<your-ip>:6710/web-hook`
+
+## 启动参数
+
 ```bash
-$ENV:CGO_ENABLED=0
-$ENV:GOOS="linux"
-$ENV:GOARCH="amd64"
+./gitlab-webhook-tool -port 6710 -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+```
 
+- `-port`：HTTP 监听端口，默认 `6710`
+- `-feishuWebhook`：飞书机器人 Webhook 地址（必填）
+
+## 本地运行（开发调试）
+
+```bash
+go run ./cmd/main.go -port 6710 -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+```
+
+## 编译
+
+产物目录：`./dist/linux/`
+
+### 在 bash（Git Bash / WSL / Linux / macOS）下交叉编译 Linux 可执行文件
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./dist/linux/gitlab-webhook-tool ./cmd/main.go
+```
+
+或：
+
+```bash
 export CGO_ENABLED=0
 export GOOS=linux
 export GOARCH=amd64
-
 go build -o ./dist/linux/gitlab-webhook-tool ./cmd/main.go
 ```
 
+### 在 Windows PowerShell 下交叉编译 Linux 可执行文件
 
-# 启动参数
-```bash
-    ./gitlab-webhook-tool -port 6710 -feishuWebhook https://open.feishu.cn/open-apis/bot/v2/hook/11111111111111111
+```powershell
+$env:CGO_ENABLED="0"
+$env:GOOS="linux"
+$env:GOARCH="amd64"
+go build -o .\dist\linux\gitlab-webhook-tool .\cmd\main.go
 ```
-- port  监听的端口
--feishuWebhook 飞书机器人
+
+## GitLab Webhook 配置建议
+
+在 GitLab 项目中配置 Webhook：
+
+- URL：`http://<service-ip>:6710/web-hook`
+- Method：`POST`
+- Content type：`application/json`
+- 事件勾选：
+  - Push events
+  - Merge request events
+
+## 当前已知限制
+
+- 当前未内置 webhook token 鉴权（如需可后续扩展）
+- 仅处理 `push` 与 `merge_request` 两类事件
