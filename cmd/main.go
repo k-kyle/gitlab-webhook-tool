@@ -50,14 +50,16 @@ func main() {
 	http.HandleFunc("/web-hook", func(writer http.ResponseWriter, request *http.Request) {
 		log.Printf("incoming webhook request: method=%s path=%s remote=%s", request.Method, request.URL.Path, request.RemoteAddr)
 		if request.Method != http.MethodPost {
-			writer.WriteHeader(http.StatusMethodNotAllowed)
+			writeJSONResponse(writer, http.StatusMethodNotAllowed, "method not allowed, only POST is supported", nil)
 			return
 		}
 		bodyBytes, err := ioutil.ReadAll(request.Body)
 		defer request.Body.Close()
 		if err != nil {
 			log.Printf("read webhook payload failed: %v", err)
-			writer.WriteHeader(http.StatusBadRequest)
+			writeJSONResponse(writer, http.StatusBadRequest, "read request body failed", map[string]interface{}{
+				"error": err.Error(),
+			})
 			return
 		}
 		log.Printf("webhook payload size=%d bytes", len(bodyBytes))
@@ -68,27 +70,41 @@ func main() {
 		err = json.Unmarshal(bodyBytes, &baseBody)
 		if err != nil {
 			log.Printf("invalid webhook payload: %v", err)
-			writer.WriteHeader(http.StatusBadRequest)
+			writeJSONResponse(writer, http.StatusBadRequest, "invalid webhook payload", map[string]interface{}{
+				"error": err.Error(),
+			})
 			return
 		}
 		if baseBody.ObjectKind == "merge_request" {
 			log.Print("dispatch webhook: object_kind=merge_request")
 			if err = mergeRequestNotify(bodyBytes, feishuWebhook, webhookRoutes); err != nil {
 				log.Printf("merge_request notify failed: %v", err)
-				writer.WriteHeader(http.StatusInternalServerError)
+				writeJSONResponse(writer, http.StatusInternalServerError, "merge_request notify failed", map[string]interface{}{
+					"error": err.Error(),
+				})
 				return
 			}
+			writeJSONResponse(writer, http.StatusOK, "merge_request processed", map[string]interface{}{
+				"object_kind": "merge_request",
+			})
 		} else if baseBody.ObjectKind == "push" {
 			log.Print("dispatch webhook: object_kind=push")
 			if err = pushNotify(bodyBytes, feishuWebhook, webhookRoutes); err != nil {
 				log.Printf("push notify failed: %v", err)
-				writer.WriteHeader(http.StatusInternalServerError)
+				writeJSONResponse(writer, http.StatusInternalServerError, "push notify failed", map[string]interface{}{
+					"error": err.Error(),
+				})
 				return
 			}
+			writeJSONResponse(writer, http.StatusOK, "push processed", map[string]interface{}{
+				"object_kind": "push",
+			})
 		} else {
 			log.Printf("ignore webhook: unsupported object_kind=%s", baseBody.ObjectKind)
+			writeJSONResponse(writer, http.StatusOK, "webhook ignored: unsupported object_kind", map[string]interface{}{
+				"object_kind": baseBody.ObjectKind,
+			})
 		}
-		writer.WriteHeader(http.StatusOK)
 	})
 
 	// 启动 HTTP 服务器
@@ -101,6 +117,25 @@ func main() {
 
 type WebhookRouteConfig struct {
 	Routes map[string]string `json:"routes" yaml:"routes"`
+}
+
+type APIResponse struct {
+	Code    int                    `json:"code"`
+	Message string                 `json:"message"`
+	Data    map[string]interface{} `json:"data,omitempty"`
+}
+
+func writeJSONResponse(writer http.ResponseWriter, status int, message string, data map[string]interface{}) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.WriteHeader(status)
+	resp := APIResponse{
+		Code:    status,
+		Message: message,
+		Data:    data,
+	}
+	if err := json.NewEncoder(writer).Encode(resp); err != nil {
+		log.Printf("write response failed: %v", err)
+	}
 }
 
 func loadWebhookRouteConfig(configPath string) (map[string]string, error) {
