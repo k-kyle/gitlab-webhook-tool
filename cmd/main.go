@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"github.com/luoyanke/gitlab-webhook-tool/internal"
 	"gopkg.in/yaml.v3"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -53,7 +53,7 @@ func main() {
 			writeJSONResponse(writer, http.StatusMethodNotAllowed, "method not allowed, only POST is supported", nil)
 			return
 		}
-		bodyBytes, err := ioutil.ReadAll(request.Body)
+		bodyBytes, err := io.ReadAll(request.Body)
 		defer request.Body.Close()
 		if err != nil {
 			log.Printf("read webhook payload failed: %v", err)
@@ -139,7 +139,7 @@ func writeJSONResponse(writer http.ResponseWriter, status int, message string, d
 }
 
 func loadWebhookRouteConfig(configPath string) (map[string]string, error) {
-	content, err := ioutil.ReadFile(configPath)
+	content, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("read config file failed: %w", err)
 	}
@@ -238,7 +238,7 @@ func sendFeishuCard(feishuWebhook string, card string) (*FeishuWebHookResp, erro
 	}
 	defer resp.Body.Close()
 
-	bodyBytesResp, err := ioutil.ReadAll(resp.Body)
+	bodyBytesResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read feishu response failed: %w", err)
 	}
