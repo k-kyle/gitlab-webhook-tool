@@ -52,9 +52,21 @@ go run ./cmd/main.go -port 6710 -config ./config.yaml
 
 ```yaml
 routes:
-  "*": "https://open.feishu.cn/open-apis/bot/v2/hook/defaultA"
-  "projectA": "https://open.feishu.cn/open-apis/bot/v2/hook/botB"
-  "group/projectB": "https://open.feishu.cn/open-apis/bot/v2/hook/botC"
+  "*":
+    webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/defaultA"
+    note: "默认路由"
+    group: "研发公共群"
+    owner: "ops"
+  "projectA":
+    webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/botB"
+    note: "projectA 专用群"
+    group: "projectA-group"
+    owner: "alice"
+  "group/projectB":
+    webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/botC"
+    note: "projectB 专用群"
+    group: "projectB-group"
+    owner: "bob"
 ```
 
 ### JSON 示例
@@ -62,9 +74,24 @@ routes:
 ```json
 {
   "routes": {
-    "*": "https://open.feishu.cn/open-apis/bot/v2/hook/defaultA",
-    "projectA": "https://open.feishu.cn/open-apis/bot/v2/hook/botB",
-    "group/projectB": "https://open.feishu.cn/open-apis/bot/v2/hook/botC"
+    "*": {
+      "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/defaultA",
+      "note": "默认路由",
+      "group": "研发公共群",
+      "owner": "ops"
+    },
+    "projectA": {
+      "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/botB",
+      "note": "projectA 专用群",
+      "group": "projectA-group",
+      "owner": "alice"
+    },
+    "group/projectB": {
+      "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/botC",
+      "note": "projectB 专用群",
+      "group": "projectB-group",
+      "owner": "bob"
+    }
   }
 }
 ```

@@ -31,7 +31,7 @@ func main() {
 	flag.IntVar(&port, "port", 6710, "6710")
 	flag.Parse()
 
-	webhookRoutes := map[string]string{}
+	webhookRoutes := map[string]WebhookRoute{}
 	if configPath != "" {
 		routes, err := loadWebhookRouteConfig(configPath)
 		if err != nil {
@@ -116,7 +116,14 @@ func main() {
 }
 
 type WebhookRouteConfig struct {
-	Routes map[string]string `json:"routes" yaml:"routes"`
+	Routes map[string]WebhookRoute `json:"routes" yaml:"routes"`
+}
+
+type WebhookRoute struct {
+	Webhook string `json:"webhook" yaml:"webhook"`
+	Note    string `json:"note" yaml:"note"`
+	Group   string `json:"group" yaml:"group"`
+	Owner   string `json:"owner" yaml:"owner"`
 }
 
 type APIResponse struct {
@@ -138,7 +145,7 @@ func writeJSONResponse(writer http.ResponseWriter, status int, message string, d
 	}
 }
 
-func loadWebhookRouteConfig(configPath string) (map[string]string, error) {
+func loadWebhookRouteConfig(configPath string) (map[string]WebhookRoute, error) {
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("read config file failed: %w", err)
@@ -163,14 +170,19 @@ func loadWebhookRouteConfig(configPath string) (map[string]string, error) {
 		return nil, fmt.Errorf("config routes is empty")
 	}
 
-	routes := map[string]string{}
+	routes := map[string]WebhookRoute{}
 	for key, value := range cfg.Routes {
 		k := strings.TrimSpace(key)
-		v := strings.TrimSpace(value)
-		if k == "" || v == "" {
+		route := WebhookRoute{
+			Webhook: strings.TrimSpace(value.Webhook),
+			Note:    strings.TrimSpace(value.Note),
+			Group:   strings.TrimSpace(value.Group),
+			Owner:   strings.TrimSpace(value.Owner),
+		}
+		if k == "" || route.Webhook == "" {
 			continue
 		}
-		routes[k] = v
+		routes[k] = route
 	}
 	if len(routes) == 0 {
 		return nil, fmt.Errorf("config routes has no valid entries")
@@ -178,7 +190,7 @@ func loadWebhookRouteConfig(configPath string) (map[string]string, error) {
 	return routes, nil
 }
 
-func resolveWebhook(projectName string, projectPathWithNamespace string, defaultWebhook string, routes map[string]string) (string, string, error) {
+func resolveWebhook(projectName string, projectPathWithNamespace string, defaultWebhook string, routes map[string]WebhookRoute) (WebhookRoute, string, error) {
 	lookupKeys := []string{
 		strings.TrimSpace(projectPathWithNamespace),
 		strings.TrimSpace(projectName),
@@ -189,14 +201,17 @@ func resolveWebhook(projectName string, projectPathWithNamespace string, default
 		if key == "" {
 			continue
 		}
-		if webhook, ok := routes[key]; ok && strings.TrimSpace(webhook) != "" {
-			return webhook, key, nil
+		if route, ok := routes[key]; ok && strings.TrimSpace(route.Webhook) != "" {
+			return route, key, nil
 		}
 	}
 	if strings.TrimSpace(defaultWebhook) != "" {
-		return defaultWebhook, "flag:-feishuWebhook", nil
+		return WebhookRoute{
+			Webhook: strings.TrimSpace(defaultWebhook),
+			Note:    "from -feishuWebhook",
+		}, "flag:-feishuWebhook", nil
 	}
-	return "", "", fmt.Errorf("no webhook route found for project=%s namespace=%s", projectName, projectPathWithNamespace)
+	return WebhookRoute{}, "", fmt.Errorf("no webhook route found for project=%s namespace=%s", projectName, projectPathWithNamespace)
 }
 
 func renderCard(templateName string, templateContent string, data map[string]interface{}) (string, error) {
@@ -257,14 +272,14 @@ func sendFeishuCard(feishuWebhook string, card string) (*FeishuWebHookResp, erro
 	return &result, nil
 }
 
-func mergeRequestNotify(bodyBytes []byte, defaultWebhook string, routes map[string]string) error {
+func mergeRequestNotify(bodyBytes []byte, defaultWebhook string, routes map[string]WebhookRoute) error {
 	var body internal.MergeRequestBody
 	err := json.Unmarshal(bodyBytes, &body)
 	if err != nil {
 		log.Printf("parse merge_request payload failed: %v", err)
 		return err
 	}
-	feishuWebhook, routeKey, err := resolveWebhook(body.Project.Name, body.Project.PathWithNamespace, defaultWebhook, routes)
+	route, routeKey, err := resolveWebhook(body.Project.Name, body.Project.PathWithNamespace, defaultWebhook, routes)
 	if err != nil {
 		return err
 	}
@@ -299,14 +314,15 @@ func mergeRequestNotify(bodyBytes []byte, defaultWebhook string, routes map[stri
 	if err != nil {
 		return err
 	}
-	if _, err = sendFeishuCard(feishuWebhook, card); err != nil {
+	if _, err = sendFeishuCard(route.Webhook, card); err != nil {
 		return err
 	}
-	log.Printf("merge_request notify success: project=%s state=%s route=%s", body.Project.Name, body.ObjectAttributes.State, routeKey)
+	log.Printf("merge_request notify success: project=%s state=%s route=%s group=%s note=%s",
+		body.Project.Name, body.ObjectAttributes.State, routeKey, route.Group, route.Note)
 	return nil
 }
 
-func pushNotify(bodyBytes []byte, defaultWebhook string, routes map[string]string) error {
+func pushNotify(bodyBytes []byte, defaultWebhook string, routes map[string]WebhookRoute) error {
 	var body internal.PushRequestBody
 
 	err := json.Unmarshal(bodyBytes, &body)
@@ -314,7 +330,7 @@ func pushNotify(bodyBytes []byte, defaultWebhook string, routes map[string]strin
 		log.Printf("parse push payload failed: %v", err)
 		return err
 	}
-	feishuWebhook, routeKey, err := resolveWebhook(body.Project.Name, body.Project.PathWithNamespace, defaultWebhook, routes)
+	route, routeKey, err := resolveWebhook(body.Project.Name, body.Project.PathWithNamespace, defaultWebhook, routes)
 	if err != nil {
 		return err
 	}
@@ -374,7 +390,7 @@ func pushNotify(bodyBytes []byte, defaultWebhook string, routes map[string]strin
 	if err != nil {
 		return err
 	}
-	result, err := sendFeishuCard(feishuWebhook, card)
+	result, err := sendFeishuCard(route.Webhook, card)
 	if err != nil {
 		if result != nil {
 			bytearray, _ := json.Marshal(result)
@@ -383,7 +399,8 @@ func pushNotify(bodyBytes []byte, defaultWebhook string, routes map[string]strin
 		log.Print(card)
 		return err
 	}
-	log.Printf("push notify success: project=%s ref=%s commits=%d route=%s", body.Project.Name, body.Ref, len(body.Commits), routeKey)
+	log.Printf("push notify success: project=%s ref=%s commits=%d route=%s group=%s note=%s",
+		body.Project.Name, body.Ref, len(body.Commits), routeKey, route.Group, route.Note)
 
 	return nil
 }
